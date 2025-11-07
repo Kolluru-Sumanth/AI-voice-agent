@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <h3>Continuous Audio Echo Test</h3>
+    <button id="startBtn">Start</button>
+    <button id="stopBtn">Stop</button>
+
+    <audio id="player" controls autoplay></audio>
+
+    <script>
+      const ws = new WebSocket("ws://localhost:8080");
+      let mediaRecorder;
+      let mediaSource;
+      let sourceBuffer;
+      let queue = [];
+      let isAppending = false;
+
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => console.log("Connected to server");
+
+      ws.onmessage = (event) => {
+        if (sourceBuffer && !sourceBuffer.updating) {
+          appendChunk(event.data);
+        } else {
+          queue.push(event.data);
+        }
+      };
+
+      function appendChunk(chunk) {
+        if (sourceBuffer.updating) {
+          queue.push(chunk);
+          return;
+        }
+        try {
+          sourceBuffer.appendBuffer(chunk);
+        } catch (e) {
+          console.warn("Append error:", e.message);
+        }
+      }
+
+      function initPlayer() {
+        const audio = document.getElementById("player");
+        mediaSource = new MediaSource();
+        audio.src = URL.createObjectURL(mediaSource);
+
+        mediaSource.addEventListener("sourceopen", () => {
+          const mime = 'audio/webm; codecs="opus"';
+          if (MediaSource.isTypeSupported(mime)) {
+            sourceBuffer = mediaSource.addSourceBuffer(mime);
+
+            sourceBuffer.addEventListener("updateend", () => {
+              if (queue.length > 0 && !sourceBuffer.updating) {
+                appendChunk(queue.shift());
+              }
+            });
+          } else {
+            alert("Your browser does not support WebM/Opus streaming.");
+          }
+        });
+      }
+
+      document.getElementById("startBtn").onclick = async () => {
+        initPlayer();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+
+        mediaRecorder.ondataavailable = async (e) => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+            const buffer = await e.data.arrayBuffer();
+            ws.send(buffer);
+          }
+        };
+
+        mediaRecorder.start(250); // capture every 250ms
+        console.log("Recording started");
+      };
+
+      document.getElementById("stopBtn").onclick = () => {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          mediaRecorder.stop();
+          console.log("Recording stopped");
+        }
+      };
+    </script>
+  </body>
+</html>
