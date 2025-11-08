@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html>
   <body>
-    <h3>Continuous Audio Echo Test</h3>
+    <h3>Continuous Audio Echo + Live Transcription</h3>
     <button id="startBtn">Start</button>
     <button id="stopBtn">Stop</button>
 
     <audio id="player" controls autoplay></audio>
+    <h4>Transcription:</h4>
+    <div id="transcriptionBox" style="border:1px solid #ccc; padding:10px; width:400px; min-height:60px;"></div>
 
     <script>
       const ws = new WebSocket("ws://localhost:8080");
@@ -13,19 +15,41 @@
       let mediaSource;
       let sourceBuffer;
       let queue = [];
-      let isAppending = false;
+      let transcriptionBox = document.getElementById("transcriptionBox");
 
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => console.log("Connected to server");
 
       ws.onmessage = (event) => {
-        if (sourceBuffer && !sourceBuffer.updating) {
-          appendChunk(event.data);
+        // handle text vs binary separately
+        if (typeof event.data === "string") {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "transcription" && msg.transcription?.text) {
+              updateTranscription(msg.transcription.text);
+            } else if (msg.message) {
+              console.log("Server:", msg.message);
+            } else if (msg.error) {
+              console.error("Server Error:", msg.error);
+            }
+          } catch {
+            console.warn("Non-JSON message:", event.data);
+          }
         } else {
-          queue.push(event.data);
+          // handle audio chunk for playback
+          if (sourceBuffer && !sourceBuffer.updating) {
+            appendChunk(event.data);
+          } else {
+            queue.push(event.data);
+          }
         }
       };
+
+      function updateTranscription(text) {
+        // Append or replace transcription
+        transcriptionBox.textContent = transcriptionBox.textContent + text;
+      }
 
       function appendChunk(chunk) {
         if (sourceBuffer.updating) {
@@ -48,7 +72,6 @@
           const mime = 'audio/webm; codecs="opus"';
           if (MediaSource.isTypeSupported(mime)) {
             sourceBuffer = mediaSource.addSourceBuffer(mime);
-
             sourceBuffer.addEventListener("updateend", () => {
               if (queue.length > 0 && !sourceBuffer.updating) {
                 appendChunk(queue.shift());
@@ -72,12 +95,13 @@
           }
         };
 
-        mediaRecorder.start(250); // capture every 250ms
+        mediaRecorder.start(3000); // send every 250ms
         console.log("Recording started");
       };
 
       document.getElementById("stopBtn").onclick = () => {
         if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          ws.send("stop-recording");
           mediaRecorder.stop();
           console.log("Recording stopped");
         }

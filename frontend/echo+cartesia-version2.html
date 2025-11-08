@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <h3>Voice-Activated Echo + STT</h3>
+    <button id="startBtn">Start</button>
+    <button id="stopBtn">Stop</button>
+
+    <audio id="player" controls autoplay></audio>
+    <div id="status" style="margin-top:10px;font-size:18px;color:green">Idle</div>
+
+    <script>
+      const ws = new WebSocket("ws://localhost:8080");
+      let mediaRecorder, audioContext, analyser, sourceNode;
+      let speaking = false;
+      let silenceTimeout;
+      let stream;
+      let isRecordingStarted = false;
+
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => console.log("Connected to server");
+
+      document.getElementById("startBtn").onclick = async () => {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log("Mic access granted");
+        startRecording(stream); // start recorder first
+      };
+
+      document.getElementById("stopBtn").onclick = () => {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          mediaRecorder.stop();
+        }
+        ws.send("stop-recording");
+        stream?.getTracks().forEach((t) => t.stop());
+        document.getElementById("status").textContent = "Stopped";
+      };
+
+      function startRecording(stream) {
+        mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+
+        mediaRecorder.onstart = () => {
+          console.log("MediaRecorder started");
+          isRecordingStarted = true;
+          initAudioDetection(stream); // start detection *after* recorder active
+        };
+
+        mediaRecorder.onpause = () => console.log("Recorder paused");
+        mediaRecorder.onresume = () => console.log("Recorder resumed");
+
+        mediaRecorder.ondataavailable = async (e) => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN && speaking) {
+            const buffer = await e.data.arrayBuffer();
+            ws.send(buffer);
+            console.log("Sent audio chunk", e.data.size);
+          }
+        };
+
+        mediaRecorder.start(1000); // collect chunks every 1s
+        console.log("Recording started");
+      }
+
+      function initAudioDetection(stream) {
+        audioContext = new AudioContext();
+        sourceNode = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        sourceNode.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.fftSize);
+        const threshold = 15; // adjust based on environment
+        const silenceDelay = 1200; // 1.2s of quiet = pause
+
+        function detect() {
+          analyser.getByteTimeDomainData(dataArray);
+          let rms = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            const val = (dataArray[i] - 128) / 128;
+            rms += val * val;
+          }
+          rms = Math.sqrt(rms / dataArray.length) * 100;
+
+          const statusEl = document.getElementById("status");
+
+          if (rms > threshold) {
+            if (!speaking && isRecordingStarted) {
+              speaking = true;
+              statusEl.textContent = "🎤 Speaking...";
+              if (mediaRecorder.state === "paused") mediaRecorder.resume();
+            }
+            clearTimeout(silenceTimeout);
+            silenceTimeout = setTimeout(() => {
+              if (speaking && isRecordingStarted) {
+                speaking = false;
+                statusEl.textContent = "🤫 Silence...";
+                if (mediaRecorder.state === "recording") mediaRecorder.pause();
+              }
+            }, silenceDelay);
+          }
+          requestAnimationFrame(detect);
+        }
+
+        detect();
+      }
+    </script>
+  </body>
+</html>

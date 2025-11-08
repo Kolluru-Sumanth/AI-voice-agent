@@ -1,0 +1,395 @@
+{
+  "name": "My workflow 4",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "voice-assistant",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c2d9dc2e-6d4b-43f1-af5e-a744a5572c46",
+      "name": "Voice Interface Endpoint",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        -736,
+        96
+      ],
+      "webhookId": "71ac230d-5949-41ba-b05e-761cb5cb07f3",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "html": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <title>AI Voice Assistant</title>\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <style>\n    body {\n      background-color: #000;\n      color: white;\n      font-family: 'Segoe UI', sans-serif;\n      display: flex;\n      flex-direction: column;\n      justify-content: center;\n      align-items: center;\n      height: 100vh;\n      margin: 0;\n      overflow: hidden;\n    }\n\n    .orb-container {\n      position: relative;\n    }\n\n    .orb {\n      width: 200px;\n      height: 200px;\n      background: radial-gradient(circle at 30% 30%, #00ffff, #004d4d);\n      border-radius: 50%;\n      box-shadow: 0 0 40px #00ffff88;\n      cursor: pointer;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      z-index: 2; /* Ensures clickability */\n    }\n\n    .ring {\n      position: absolute;\n      top: -20px;\n      left: -20px;\n      width: 240px;\n      height: 240px;\n      border-radius: 50%;\n      box-shadow: 0 0 30px #00ffff55;\n      animation: pulse 2s infinite;\n      z-index: 1;\n      pointer-events: none; /* Prevents click interference */\n    }\n    \n    .orb.listening {\n      background: radial-gradient(circle at 30% 30%, #00ffcc, #005c5c);\n      box-shadow: 0 0 50px #00ffff;\n    }\n\n    .orb.playing {\n      background: radial-gradient(circle at 30% 30%, #ff00ff, #520052);\n      box-shadow: 0 0 50px #ff00ff99;\n    }\n\n    .ring.listening {\n      animation: vibrate 0.4s infinite;\n    }\n\n    .ring.playing {\n      animation: glow 1s ease-in-out infinite alternate;\n    }\n\n    @keyframes pulse {\n      0%, 100% { transform: scale(1); opacity: 0.6; }\n      50% { transform: scale(1.2); opacity: 1; }\n    }\n\n    @keyframes vibrate {\n      0% { transform: scale(1.05); }\n      50% { transform: scale(1.15); }\n      100% { transform: scale(1.05); }\n    }\n\n    @keyframes glow {\n      0% { box-shadow: 0 0 40px #ff00ff88; }\n      100% { box-shadow: 0 0 60px #ff00ffcc; }\n    }\n\n    .status-text {\n      margin-top: 20px;\n      font-size: 18px;\n      color: #aaa;\n      font-weight: 300;\n      font-style: italic;\n    }\n  </style>\n</head>\n<body>\n  <div class=\"orb-container\">\n    <div id=\"ring\" class=\"ring\"></div>\n    <div id=\"orb\" class=\"orb\" title=\"Click to speak with AI\"></div>\n  </div>\n  <div id=\"status\" class=\"status-text\">Click to speak</div>\n\n  <audio id=\"beep\" src=\"https://www.soundjay.com/button/sounds/button-3.mp3\" preload=\"auto\"></audio>\n\n  <script>\n    const orb = document.getElementById('orb');\n    const ring = document.getElementById('ring');\n    const statusText = document.getElementById('status');\n    const beep = document.getElementById('beep');\n\n    let recognition;\n    let lastTranscript = \"\";\n    let silenceTimeout;\n\n    // Initialize speech recognition\n    function startRecognition() {\n      if (!('webkitSpeechRecognition' in window)) {\n        alert('This browser does not support speech recognition.');\n        return;\n      }\n\n      beep.play();\n      recognition = new webkitSpeechRecognition();\n      recognition.lang = 'en-US'; // Change to your preferred language\n      recognition.interimResults = true;\n      recognition.continuous = true;\n      lastTranscript = \"\";\n\n      recognition.onstart = () => {\n        orb.classList.add('listening');\n        ring.classList.add('listening');\n        statusText.textContent = \"Listening...\";\n      };\n\n      recognition.onresult = (event) => {\n        for (let i = event.resultIndex; i < event.results.length; ++i) {\n          if (event.results[i].isFinal) {\n            lastTranscript += event.results[i][0].transcript;\n          }\n        }\n\n        // Reset silence timeout\n        clearTimeout(silenceTimeout);\n        silenceTimeout = setTimeout(stopRecognition, 1000);\n      };\n\n      recognition.onerror = (event) => {\n        console.error('Error:', event.error);\n        orb.classList.remove('listening');\n        ring.classList.remove('listening');\n        statusText.textContent = \"Error: \" + event.error;\n      };\n\n      recognition.onend = () => {\n        orb.classList.remove('listening');\n        ring.classList.remove('listening');\n      };\n\n      recognition.start();\n    }\n\n    // Stop recognition and send to webhook\n    async function stopRecognition() {\n      if (recognition) {\n        recognition.stop();\n        orb.classList.remove('listening');\n        ring.classList.remove('listening');\n        statusText.textContent = \"Processing...\";\n\n        if (lastTranscript.trim() !== '') {\n          try {\n            console.log(\"Sending to webhook:\", lastTranscript.trim());\n            // IMPORTANT: Replace YOUR_WEBHOOK_URL_HERE with the actual webhook URL from the 'Audio Processing Endpoint' node\n            const response = await fetch(\"http://localhost:5678/webhook/process-audio\", {\n              method: \"POST\",\n              headers: { \"Content-Type\": \"application/json\" },\n              body: JSON.stringify({ question: lastTranscript.trim() })\n            });\n\n            if (!response.ok) throw new Error(\"Server response error\");\n\n            const blob = await response.blob();\n            const audioURL = URL.createObjectURL(blob);\n            const audio = new Audio(audioURL);\n\n            audio.onplay = () => {\n              orb.classList.add('playing');\n              ring.classList.add('playing');\n              statusText.textContent = \"Responding...\";\n            };\n\n            audio.onended = () => {\n              orb.classList.remove('playing');\n              ring.classList.remove('playing');\n              statusText.textContent = \"Click to speak\";\n            };\n\n            audio.play();\n\n          } catch (err) {\n            console.error(\"Error sending or processing response:\", err);\n            statusText.textContent = \"Error communicating with AI\";\n          }\n        }\n      }\n    }\n\n    // Click handler for the orb\n    orb.addEventListener('click', () => {\n      if (recognition && recognition.running) {\n        stopRecognition();\n      } else {\n        startRecognition();\n      }\n    });\n  </script>\n</body>\n</html>\n"
+      },
+      "id": "21d3cd6a-1960-4356-9861-752dcbbb54b5",
+      "name": "Voice Assistant UI",
+      "type": "n8n-nodes-base.html",
+      "position": [
+        -512,
+        96
+      ],
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "7035f271-b500-4b32-9c83-161d1b99ad26",
+      "name": "Send HTML Interface",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        -320,
+        96
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "process-audio",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e4eeda69-1b21-4cd5-af4e-f2293ccc2924",
+      "name": "Audio Processing Endpoint",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        -896,
+        640
+      ],
+      "webhookId": "287d40b1-4172-4ba0-9a1d-6d971dd9cf68",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.question }}",
+        "options": {
+          "systemMessage": "You are a sales assistant for the product NutriJa Natural Caffeine 100mg Plus L-Theanine 200mg (60 Capsules) listed in the Health and Personal Care category. Your task is to give clear, natural, and narration-ready responses that highlight the product’s key information and help customers understand its value.\n\nGuidelines:\n\nDo not use emojis, symbols, or markdown.\n\nDo not add decorative characters or formatting.\n\nSpeak in a simple, confident, and informative tone.\n\nProvide complete details when describing the product.\n\nMention all specifications, benefits, and brand information naturally in conversation.\n\nAvoid unnecessary words, emotional tone, or promotional exaggeration.\n\nDo not mention or read website elements like “Add to Cart,” “Buy Now,” or “Ratings.”\n\nKeep responses natural for voice output.\n\nProduct Details:\nProduct Name: NutriJa Natural Caffeine 100mg Plus L-Theanine 200mg\nBrand: NutriJa Lifesciences\nPrice: ₹620.00 with 24 percent savings from the MRP of ₹811.00\nQuantity: 60 capsules per pack\nCost per capsule: ₹10.33\nCountry of Origin: India\nManufacturer: NutriJa Lifesciences\nItem Weight: 800 grams\nDimensions: 9 by 5 by 5 centimeters\nForm: Capsule\nFlavor: Unflavored\nPrimary Supplement Type: Natural Caffeine plus L-Theanine\nDiet Type: Vegetarian\nSpecial Ingredients: Non-synthetic caffeine from green coffee beans and L-Theanine from green tea\nProduct Benefits: Energy management, improved focus, alertness, and concentration\nShelf Life: Use by 30 June 2027\nBest Sellers Rank: Number 9,637 in Health and Personal Care and Number 33 in Pre-Workout Supplements\n\nProduct Description Summary:\nEach capsule contains 100 milligrams of natural caffeine and 200 milligrams of L-Theanine. The combination helps maintain steady energy, mental clarity, and alertness without causing jitters or a crash. It supports concentration, endurance, and overall cognitive performance. The supplement uses plant-based sources and is 100 percent vegetarian.\n\nBrand Information:\nNutriJa Lifesciences is an Indian brand known for delivering high-quality, authentic sports and nutritional supplements. The company sources ingredients from trusted suppliers in the United States and Europe to maintain international standards.\n\nExample Tone:\n“This supplement provides a balanced boost of energy and focus with 100 milligrams of natural caffeine and 200 milligrams of L-Theanine. It helps you stay alert and productive throughout the day without jitters or sudden energy crashes. Each pack contains 60 vegetarian capsules, priced at six hundred twenty rupees, offering long-lasting mental clarity and focus.”"
+        }
+      },
+      "id": "add70f49-ada1-4347-bb0f-a99e8eea5470",
+      "name": "Process User Query",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        -672,
+        640
+      ],
+      "typeVersion": 1.8
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "options": {}
+      },
+      "id": "ff3ce16a-2cd2-4b60-a9fb-9f557cd185cc",
+      "name": "Send Audio Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        96,
+        640
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "content": "## VOICE ASSISTANT INTERFACE\n\nThis webhook serves the HTML interface with the interactive orb that users click to speak with the AI assistant.\n\nAccess this webhook URL in your browser to use the voice assistant.",
+        "height": 372,
+        "width": 840,
+        "color": 5
+      },
+      "id": "1d24e353-3e24-4a50-b82b-f3b03f47eff9",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -880,
+        -112
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## BACKEND PROCESSING\n\nThis section handles:\n1. Receiving transcribed speech from the frontend\n2. Processing through AI with conversation memory\n3. Converting response to speech\n4. Sending audio back to the browser",
+        "height": 580,
+        "width": 1100,
+        "color": 3
+      },
+      "id": "2ea008bd-e3a9-4479-9bf0-4281e1b72f7f",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -992,
+        416
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## Voice Assistant Interface with n8n and OpenAI\n\nThis workflow creates a voice-activated AI assistant interface that runs directly in your browser. Users can click on a glowing orb to speak with the AI, which responds with voice using OpenAI's text-to-speech capabilities.\n\n## Who is it for?\n\nThis template is perfect for:\n- Developers looking to add voice interfaces to their applications\n- Customer service teams wanting to create voice-enabled support systems\n- Content creators building interactive voice experiences\n- Anyone interested in creating their own \"Alexa-like\" assistant\n\n## How it works\n\nThe workflow consists of two main parts:\n\n1. **Frontend Interface**: A beautiful animated orb that users click to activate voice recording\n2. **Backend Processing**: Receives the audio transcription, processes it through an AI agent with memory, and returns voice responses\n\nThe system uses:\n- Web Speech API for voice recognition (browser-based)\n- OpenAI GPT-4o-mini for intelligent responses\n- OpenAI Text-to-Speech for voice synthesis\n- Session memory to maintain conversation context\n\n## Setup requirements\n\n- n8n instance (self-hosted or cloud)\n- OpenAI API key with access to:\n  - GPT-4o-mini model\n  - Text-to-Speech API\n- Modern web browser with Web Speech API support (Chrome, Edge, Safari)\n\n## How to set up\n\n1. Import the workflow into your n8n instance\n2. Add your OpenAI credentials to both OpenAI nodes\n3. Copy the webhook URL from the \"Audio Processing Endpoint\" node\n4. Edit the \"Voice Assistant UI\" node and replace `YOUR_WEBHOOK_URL_HERE` with your webhook URL\n5. Access the \"Voice Interface Endpoint\" webhook URL in your browser\n6. Click the orb and start talking!\n\n## How to customize the workflow\n\n- **Change the AI personality**: Edit the system message in the \"Process User Query\" node\n- **Modify the visual style**: Customize the CSS in the \"Voice Assistant UI\" node\n- **Add more capabilities**: Connect additional tools to the AI Agent\n- **Change the voice**: Select a different voice in the \"Generate Voice Response\" node\n- **Adjust memory**: Modify the context window length in the \"Conversation Memory\" node\n\n## Demo\n\nWatch the template in action: https://youtu.be/0bMdJcRMnZY",
+        "height": 1460,
+        "width": 600,
+        "color": 6
+      },
+      "id": "f8421cde-259f-4269-bb92-295a834f9508",
+      "name": "Template Description",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1728,
+        -112
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ SETUP INSTRUCTIONS\n\n1. **Add OpenAI Credentials**:\n   - Click on \"GPT-4o-mini Model\" node\n   - Add your OpenAI API credentials\n   - Do the same for \"Generate Voice Response\" node\n\n2. **Configure Webhook URL**:\n   - Copy the webhook URL from \"Audio Processing Endpoint\"\n   - Edit \"Voice Assistant UI\" node\n   - Replace YOUR_WEBHOOK_URL_HERE with the copied URL\n\n3. **Test the Assistant**:\n   - Open the \"Voice Interface Endpoint\" webhook URL in your browser\n   - Click the glowing orb\n   - Allow microphone permissions\n   - Start speaking!",
+        "height": 500,
+        "width": 400,
+        "color": 7
+      },
+      "id": "a10c572d-2465-4fd8-92d9-8b42523ca101",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        208,
+        -128
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## 🎨 CUSTOMIZATION OPTIONS\n\n**Language Support**:\n- Change `recognition.lang = 'en-US'` in the HTML\n- Options: 'pt-BR', 'es-ES', 'fr-FR', etc.\n\n**Voice Options**:\n- alloy: Neutral and balanced\n- echo: Warm and conversational\n- fable: Expressive and dynamic\n- onyx: Deep and authoritative\n- nova: Friendly and upbeat\n- shimmer: Soft and gentle\n\n**Visual Themes**:\n- Modify CSS colors for different moods\n- Adjust animation speeds\n- Change orb size and effects",
+        "height": 440,
+        "width": 400,
+        "color": 7
+      },
+      "id": "f2f92804-b641-4688-8be0-21045a3979cb",
+      "name": "Customization Options",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        208,
+        480
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {}
+      },
+      "id": "81bb24bd-bc0f-4810-a74b-76bd7f8e24a4",
+      "name": "GPT-4o-mini Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "position": [
+        -896,
+        832
+      ],
+      "typeVersion": 1.2,
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        832
+      ],
+      "id": "8438804d-5bdf-4dd4-9d3d-e6d72b1bd18a",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Jd9xCNShug5JBA5L",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "input": "={{ $json.output }}",
+        "voice": "onyx",
+        "options": {}
+      },
+      "id": "dfd91932-1b12-4deb-84fa-f037c715827a",
+      "name": "Generate Voice Response",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "position": [
+        -128,
+        400
+      ],
+      "typeVersion": 1.8,
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/text-to-speech",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.cleanedText }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -112,
+        640
+      ],
+      "id": "06ba78d1-f60e-478c-8be6-9ee581f605ca",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the input text\nconst inputText = $input.item.json.output;\n\n// Remove emojis using regex\n// This regex matches most emoji characters\nlet cleanedText = inputText.replace(/[\\u{1F600}-\\u{1F64F}]|[\\u{1F300}-\\u{1F5FF}]|[\\u{1F680}-\\u{1F6FF}]|[\\u{1F1E0}-\\u{1F1FF}]|[\\u{2600}-\\u{26FF}]|[\\u{2700}-\\u{27BF}]|[\\u{1F900}-\\u{1F9FF}]|[\\u{1FA70}-\\u{1FAFF}]/gu, '');\n\n// Remove asterisks\ncleanedText = cleanedText.replace(/\\*/g, '');\n\n// Replace \\n with actual spaces\ncleanedText = cleanedText.replace(/\\\\n/g, ' ');\n\n// Replace multiple spaces with single space\ncleanedText = cleanedText.replace(/\\s+/g, ' ');\n\n// Trim leading and trailing spaces\ncleanedText = cleanedText.trim();\n\n// Return the cleaned text\nreturn {\n  json: {\n    originalText: inputText,\n    cleanedText: cleanedText\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        640
+      ],
+      "id": "50e078f8-f754-422b-a7a3-1f20a9b312f4",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "voice-assistant-session"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -624,
+        896
+      ],
+      "id": "3ebc4975-4dbc-474d-8c06-baa601a24f8e",
+      "name": "Simple Memory"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "GPT-4o-mini Model": {
+      "ai_languageModel": [
+        []
+      ]
+    },
+    "Process User Query": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voice Assistant UI": {
+      "main": [
+        [
+          {
+            "node": "Send HTML Interface",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voice Interface Endpoint": {
+      "main": [
+        [
+          {
+            "node": "Voice Assistant UI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audio Processing Endpoint": {
+      "main": [
+        [
+          {
+            "node": "Process User Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Process User Query",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Voice Response": {
+      "main": [
+        []
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Send Audio Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Process User Query",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "37c3458d-38c9-4dfe-ac08-25d40beb1410",
+  "meta": {
+    "instanceId": "c768c415323e14beb310becf4032fe7b1a63a7fbf321c338598eb770a1c55255"
+  },
+  "id": "F5NCggygrBhsiyn1",
+  "tags": []
+}
