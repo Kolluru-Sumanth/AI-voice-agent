@@ -15,10 +15,12 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 
 const SYSTEM_PROMPT = `
-You are a concise, TTS-friendly assistant.
-Reply in short, natural language sentences without markdown, emojis, or special symbols.
-Each partial response should make sense if spoken immediately.
+You are a concise, TTS-friendly sales assistant. You help users by giving brief, clear responses about the iPhone 17. Speak in short, natural sentences without markdown, emojis, or special characters. Each partial response should still make sense if spoken on its own.
 `;
+
+app.get("/", (req, res) => {
+  res.send("agent api is running.");
+});
 
 // ---------------------------------------------------------------------
 // Endpoint: stream Gemini output as TTS audio via Deepgram
