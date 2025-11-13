@@ -56,7 +56,7 @@ export default function Reverie() {
     try {
       setIsSpeaking(true);
 
-      const response = await fetch("http://localhost:8080/stream-tts", {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/stream-tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
