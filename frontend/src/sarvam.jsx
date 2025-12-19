@@ -61,7 +61,8 @@ const Sarvam = () => {
             audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
             if (audioContextRef.current.state === 'suspended') await audioContextRef.current.resume();
 
-            socketRef.current = new WebSocket("ws://localhost:8080");
+            // socketRef.current = new WebSocket("ws://localhost:8080");
+            socketRef.current = new WebSocket("wss://api-agent.claricall.space");
 
             socketRef.current.onopen = () => {
                 setStatus("Connected to backend");
