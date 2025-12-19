@@ -1,9 +1,11 @@
 import Reverie from "./Reverie";
+import Sarvam from "./sarvam";
 
 function App() {
   return (
     <div>
-      <Reverie />
+      {/* <Reverie /> */}
+      <Sarvam />
     </div>
   );
 }

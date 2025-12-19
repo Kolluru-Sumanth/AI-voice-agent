@@ -12,6 +12,7 @@
   "dependencies": {
     "@cartesia/cartesia-js": "^2.2.7",
     "@deepgram/sdk": "^4.11.2",
+    "@dqbd/tiktoken": "^1.0.22",
     "@google-cloud/text-to-speech": "^6.4.0",
     "@google/generative-ai": "^0.24.1",
     "@reverieit/reverie-client": "^0.8.0",
