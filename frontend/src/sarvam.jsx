@@ -22,7 +22,7 @@ const Sarvam = () => {
     const [latestTranscript, setLatestTranscript] = useState("");
     const [messages, setMessages] = useState([]);
 
-    // --- Incremental Metrics State ---
+    // --- Metrics State ---
     const [metrics, setMetrics] = useState({
         totalInputTokens: 0,
         totalOutputTokens: 0,
@@ -40,11 +40,15 @@ const Sarvam = () => {
     const isAiStreamingRef = useRef(false);
     const timerRef = useRef(null);
 
+    // --- NEW REFS FOR AUDIO SCHEDULING ---
+    const nextStartTimeRef = useRef(0);
+    const SAMPLE_RATE = 16000; // Explicitly match Cartesia's output
+
     // --- Cost Constants (INR) ---
-    const INPUT_TOKEN_RATE = 0.000225; // ($2.5/1M) * 90
-    const OUTPUT_TOKEN_RATE = 0.0009;   // ($10/1M) * 90
-    const CHAR_RATE = 15 / 10000;       // ₹15 per 10k characters
-    const DURATION_RATE = 45 / 3600;    // ₹45 per hour (converted to per second)
+    const INPUT_TOKEN_RATE = 0.000225;
+    const OUTPUT_TOKEN_RATE = 0.0009;
+    const CHAR_RATE = 15 / 10000;
+    const DURATION_RATE = 45 / 3600;
 
     useEffect(() => {
         if (outputScrollRef.current) {
@@ -55,11 +59,17 @@ const Sarvam = () => {
     const startStreaming = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
-                audio: { channelCount: 1, sampleRate: 16000 }
+                audio: { channelCount: 1, sampleRate: SAMPLE_RATE }
             });
 
-            audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-            if (audioContextRef.current.state === 'suspended') await audioContextRef.current.resume();
+            // Ensure Context is created with the correct sample rate
+            audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: SAMPLE_RATE
+            });
+
+            if (audioContextRef.current.state === 'suspended') {
+                await audioContextRef.current.resume();
+            }
 
             // socketRef.current = new WebSocket("ws://localhost:8080");
             socketRef.current = new WebSocket("wss://api-agent.claricall.space");
@@ -67,7 +77,6 @@ const Sarvam = () => {
             socketRef.current.onopen = () => {
                 setStatus("Connected to backend");
                 setupAudioProcessing(stream);
-
                 timerRef.current = setInterval(() => {
                     setMetrics(prev => ({ ...prev, duration: prev.duration + 1 }));
                 }, 1000);
@@ -78,6 +87,43 @@ const Sarvam = () => {
                     const json = JSON.parse(event.data);
                     const time = getTimestamp();
 
+                    // --- 1. HANDLE AI AUDIO CHUNKS ---
+                    if (json.type === "ai_audio") {
+                        const binaryString = window.atob(json.audio);
+                        const len = binaryString.length;
+                        const bytes = new Uint8Array(len);
+                        for (let i = 0; i < len; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }
+
+                        // Convert PCM 16-bit to Float32
+                        const int16Data = new Int16Array(bytes.buffer);
+                        const float32Data = new Float32Array(int16Data.length);
+                        for (let i = 0; i < int16Data.length; i++) {
+                            float32Data[i] = int16Data[i] / 32768.0;
+                        }
+
+                        // Create buffer at exactly 16kHz
+                        const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, SAMPLE_RATE);
+                        audioBuffer.getChannelData(0).set(float32Data);
+
+                        const source = audioContextRef.current.createBufferSource();
+                        source.buffer = audioBuffer;
+                        source.connect(audioContextRef.current.destination);
+
+                        // SCHEDULING LOGIC:
+                        const now = audioContextRef.current.currentTime;
+
+                        // If we have fallen behind, reset schedule to current time + small buffer
+                        if (nextStartTimeRef.current < now) {
+                            nextStartTimeRef.current = now + 0.1; // 100ms jitter buffer
+                        }
+
+                        source.start(nextStartTimeRef.current);
+                        nextStartTimeRef.current += audioBuffer.duration;
+                    }
+
+                    // --- 2. HANDLE TEXT TRANSCRIPTS ---
                     if (json.type === "data") {
                         const transcript = json.data?.transcript || "";
                         if (transcript.trim()) {
@@ -86,6 +132,7 @@ const Sarvam = () => {
                         }
                     }
 
+                    // --- 3. HANDLE METRICS & STREAMING ---
                     if (json.type === "token_usage") {
                         setMetrics(prev => ({
                             ...prev,
@@ -95,7 +142,6 @@ const Sarvam = () => {
 
                     if (json.type === "ai_stream") {
                         const token = json.text || "";
-                        // Accumulate character count incrementally
                         setMetrics(prev => ({
                             ...prev,
                             totalOutputChars: prev.totalOutputChars + token.length
@@ -123,7 +169,10 @@ const Sarvam = () => {
                         }));
                     }
 
-                    if (json.type === "ai_done") isAiStreamingRef.current = false;
+                    if (json.type === "ai_done") {
+                        isAiStreamingRef.current = false;
+                        // Don't reset nextStartTimeRef here if you want audio to finish playing
+                    }
 
                 } catch (err) {
                     console.error("Parse error:", err);
@@ -144,7 +193,8 @@ const Sarvam = () => {
             const inputData = event.inputBuffer.getChannelData(0);
             const current = audioChunksRef.current;
             const newBuf = new Float32Array(current.length + inputData.length);
-            newBuf.set(current); newBuf.set(inputData, current.length);
+            newBuf.set(current);
+            newBuf.set(inputData, current.length);
             audioChunksRef.current = newBuf;
 
             if (audioChunksRef.current.length >= 800) {
@@ -155,7 +205,9 @@ const Sarvam = () => {
                 reader.onloadend = () => {
                     const b64 = reader.result.split(",")[1];
                     if (socketRef.current?.readyState === WebSocket.OPEN) {
-                        socketRef.current.send(JSON.stringify({ audio: { data: b64, encoding: "audio/wav", sample_rate: 16000 } }));
+                        socketRef.current.send(JSON.stringify({
+                            audio: { data: b64, encoding: "audio/wav", sample_rate: SAMPLE_RATE }
+                        }));
                     }
                 };
             }
@@ -167,14 +219,10 @@ const Sarvam = () => {
 
     const stopStreaming = () => {
         setIsRecording(false);
-
-        // --- STOP THE TIMER ---
         if (timerRef.current) {
             clearInterval(timerRef.current);
-            timerRef.current = null; // Clean up the ref
+            timerRef.current = null;
         }
-
-        // --- Existing cleanup logic ---
         if (scriptProcessorRef.current) scriptProcessorRef.current.disconnect();
         if (inputStreamRef.current) inputStreamRef.current.disconnect();
         if (audioContextRef.current) audioContextRef.current.close();
@@ -182,6 +230,7 @@ const Sarvam = () => {
 
         audioChunksRef.current = new Float32Array(0);
         isAiStreamingRef.current = false;
+        nextStartTimeRef.current = 0;
         setStatus("Recording stopped");
     };
 
@@ -191,7 +240,6 @@ const Sarvam = () => {
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
-    // --- FINAL COST SUM ---
     const totalCost =
         (metrics.totalInputTokens * INPUT_TOKEN_RATE) +
         (metrics.totalOutputTokens * OUTPUT_TOKEN_RATE) +
@@ -211,10 +259,9 @@ const Sarvam = () => {
             <div style={styles.controls}>
                 <button onClick={startStreaming} disabled={isRecording} style={{ ...styles.button, ...styles.startBtn, ...(isRecording ? styles.disabled : {}) }}>Start Streaming</button>
                 <button onClick={stopStreaming} disabled={!isRecording} style={{ ...styles.button, ...styles.stopBtn, ...(!isRecording ? styles.disabled : {}) }}>Stop Streaming</button>
-                <button onClick={() => { setMessages([]); setLatestTranscript(""); setMetrics({ totalInputTokens: 0, totalOutputTokens: 0, totalOutputChars: 0, duration: 0 }); }} style={{ ...styles.button, ...styles.clearBtn }}>Reset Session</button>
+                <button onClick={() => { setMessages([]); setLatestTranscript(""); setMetrics({ totalInputTokens: 0, totalOutputTokens: 0, totalOutputChars: 0, duration: 0 }); nextStartTimeRef.current = 0; }} style={{ ...styles.button, ...styles.clearBtn }}>Reset Session</button>
             </div>
 
-            {/* --- CUMULATIVE DASHBOARD --- */}
             <div style={styles.dashboard}>
                 <div style={styles.metricCard}>
                     <div style={styles.metricLabel}>Input Cost</div>
