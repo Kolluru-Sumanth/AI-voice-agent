@@ -2,7 +2,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import dotenv from "dotenv";
 import axios from "axios";
 import { encoding_for_model } from "@dqbd/tiktoken";
-
+import { v4 as uuidv4 } from "uuid"; // Recommended for context IDs
 dotenv.config();
 
 // ---------------------------------------------
@@ -10,7 +10,7 @@ dotenv.config();
 // ---------------------------------------------
 const SARVAM_API_KEY = process.env.SARVAM_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-
+const CARTESIA_API_KEY = process.env.CARTESIA_API_KEY;
 // Tokenizer
 const enc = encoding_for_model("gpt-4o");
 
@@ -96,7 +96,6 @@ This is the knowledge provided to you:
     ]
 }
 `;
-
 // ---------------------------------------------
 // START WEBSOCKET SERVER
 // ---------------------------------------------
@@ -105,10 +104,30 @@ const wss = new WebSocketServer({ port: 8080 });
 wss.on("connection", async (clientWs) => {
   console.log("Frontend connected");
 
-  // Conversation memory for this client
-  const conversation = [
-    { role: "system", content: SYSTEM_PROMPT }
-  ];
+  const conversation = [{ role: "system", content: SYSTEM_PROMPT }];
+
+  // ---------------------------------------------
+  // Cartesia TTS WebSocket Setup
+  // ---------------------------------------------
+  const cartesiaWs = new WebSocket(
+    `wss://api.cartesia.ai/tts/websocket?api_key=${CARTESIA_API_KEY}&cartesia_version=2024-06-10`
+  );
+
+  cartesiaWs.on("open", () => console.log("Connected to Cartesia TTS"));
+
+  cartesiaWs.on("message", (data) => {
+    const response = JSON.parse(data);
+    console.log("Cartesia raw response type:", response.type); // Add this log
+
+    if (response.type === "chunk") {
+      clientWs.send(JSON.stringify({
+        type: "ai_audio",
+        audio: response.data,
+      }));
+    } else if (response.type === "error") {
+      console.error("Cartesia Error Details:", response.error); // Log the specific error
+    }
+  });
 
   // ---------------------------------------------
   // Sarvam STT WebSocket
@@ -118,30 +137,19 @@ wss.on("connection", async (clientWs) => {
     [`api-subscription-key.${SARVAM_API_KEY}`]
   );
 
-  sarvamWs.on("open", () => console.log("Connected to Sarvam STT"));
-  sarvamWs.on("close", () => console.log("Sarvam WS closed"));
-  sarvamWs.on("error", (err) => console.error("Sarvam WS Error:", err));
-
-  // Incoming STT text
   sarvamWs.on("message", async (raw) => {
     const stt = JSON.parse(raw.toString());
-    console.log("STT:", stt);
-    // Forward STT to frontend
     clientWs.send(raw.toString());
 
     const transcript = stt?.data?.transcript?.trim();
     if (!transcript) return;
 
-    console.log("Transcript:", transcript);
-
-    // Add user message
     conversation.push({ role: "user", content: transcript });
 
-    // Query model
-    await queryOpenRouterStream(conversation, clientWs);
+    // Pass cartesiaWs to the streaming function
+    await queryOpenRouterStream(conversation, clientWs, cartesiaWs);
   });
 
-  // Forward frontend audio → Sarvam
   clientWs.on("message", (msg) => {
     if (sarvamWs.readyState === WebSocket.OPEN) {
       sarvamWs.send(msg.toString());
@@ -149,53 +157,30 @@ wss.on("connection", async (clientWs) => {
   });
 
   clientWs.on("close", () => {
-    console.log("Frontend disconnected");
     sarvamWs.close();
+    cartesiaWs.close();
   });
 });
 
-console.log("Backend WebSocket server running on ws://localhost:8080");
-
-
 // --------------------------------------------------
-//               LLM STREAMING FUNCTION
+// LLM STREAMING FUNCTION (Modified to include TTS)
 // --------------------------------------------------
-async function queryOpenRouterStream(conversation, clientWs) {
+async function queryOpenRouterStream(conversation, clientWs, cartesiaWs) {
   try {
-    // ---------------------------------------------
-    // INPUT TOKEN & WORD COUNT
-    // ---------------------------------------------
     const fullPromptText = conversation.map(m => m.content).join("\n");
-
     const inputTokens = countTokens(fullPromptText);
     const inputWords = countWords(fullPromptText);
 
-    // Send input usage to frontend
-    clientWs.send(
-      JSON.stringify({
-        type: "token_usage",
-        input_tokens: inputTokens,
-        input_words: inputWords
-      })
-    );
+    clientWs.send(JSON.stringify({ type: "token_usage", input_tokens: inputTokens, input_words: inputWords }));
 
-    // ---------------------------------------------
-    // CALL OPENROUTER
-    // ---------------------------------------------
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "openai/gpt-4o",
-        stream: true,
-        messages: conversation
-      },
+      { model: "openai/gpt-4o", stream: true, messages: conversation },
       {
         responseType: "stream",
         headers: {
           "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "http://localhost:8080",
-          "X-Title": "Voice Assistant"
+          "Content-Type": "application/json"
         }
       }
     );
@@ -204,14 +189,15 @@ async function queryOpenRouterStream(conversation, clientWs) {
     let outputTokens = 0;
     let outputWords = 0;
 
-    // Stream chunks
+    // Create a unique ID for this specific TTS "turn"
+    const context_id = uuidv4();
+
     response.data.on("data", (chunk) => {
       const lines = chunk.toString().split("\n");
 
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed.startsWith("data:")) continue;
-
         const jsonStr = trimmed.replace("data:", "").trim();
 
         if (jsonStr === "[DONE]") {
@@ -220,63 +206,68 @@ async function queryOpenRouterStream(conversation, clientWs) {
         }
 
         let parsed;
-        try { parsed = JSON.parse(jsonStr); }
-        catch { continue; }
+        try { parsed = JSON.parse(jsonStr); } catch { continue; }
 
         const delta = parsed?.choices?.[0]?.delta?.content;
 
         if (delta) {
           assistantFullResponse += delta;
-
-          // Count tokens and words for this streamed chunk
           outputTokens += countTokens(delta);
           outputWords += countWords(delta);
 
-          clientWs.send(
-            JSON.stringify({
-              type: "ai_stream",
-              text: delta
-            })
-          );
+          // 1. Send text to frontend
+          clientWs.send(JSON.stringify({ type: "ai_stream", text: delta }));
+
+          // 2. IMMEDIATELY send text delta to Cartesia
+          // ... inside your delta loop ...
+          if (cartesiaWs.readyState === WebSocket.OPEN) {
+            cartesiaWs.send(JSON.stringify({
+              model_id: "sonic-english", // or "sonic-3"
+              voice: {
+                mode: "id",
+                id: "b7d50908-b17c-442d-ad8d-810c63997ed9", // Try 'California Girl'
+              },
+              output_format: {
+                container: "raw",
+                encoding: "pcm_s16le",
+                sample_rate: 16000,
+              },
+              transcript: delta,
+              context_id: context_id,
+              continue: true
+            }));
+          }
         }
       }
     });
 
-    // End of stream
     return new Promise((resolve) => {
       response.data.on("end", () => {
-        if (assistantFullResponse.trim()) {
-          conversation.push({
-            role: "assistant",
-            content: assistantFullResponse
-          });
+        // Finalize the Cartesia stream for this context
+        if (cartesiaWs.readyState === WebSocket.OPEN) {
+          cartesiaWs.send(JSON.stringify({
+            context_id: context_id,
+            transcript: "",
+            continue: false
+          }));
         }
 
-        // FINAL TOKEN REPORT
-        clientWs.send(
-          JSON.stringify({
-            type: "token_usage_final",
-            output_tokens: outputTokens,
-            output_words: outputWords,
-            total_tokens: inputTokens + outputTokens
-          })
-        );
+        if (assistantFullResponse.trim()) {
+          conversation.push({ role: "assistant", content: assistantFullResponse });
+        }
 
+        clientWs.send(JSON.stringify({
+          type: "token_usage_final",
+          output_tokens: outputTokens,
+          output_words: outputWords,
+          total_tokens: inputTokens + outputTokens
+        }));
         resolve("STREAM_DONE");
       });
     });
 
   } catch (err) {
-    console.error(
-      "OpenRouter Streaming Error:",
-      err.response?.data || err
-    );
-
-    clientWs.send(
-      JSON.stringify({
-        type: "ai_error",
-        text: "Error contacting AI model."
-      })
-    );
+    console.log(err);
+    clientWs.send(JSON.stringify({ type: "ai_error", text: "Error contacting AI model." }));
   }
 }
