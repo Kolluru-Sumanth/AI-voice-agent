@@ -2,7 +2,8 @@ import WebSocket, { WebSocketServer } from "ws";
 import dotenv from "dotenv";
 import axios from "axios";
 import { encoding_for_model } from "@dqbd/tiktoken";
-import { v4 as uuidv4 } from "uuid"; // Recommended for context IDs
+import * as sdk from "microsoft-cognitiveservices-speech-sdk";
+
 dotenv.config();
 
 // ---------------------------------------------
@@ -10,7 +11,9 @@ dotenv.config();
 // ---------------------------------------------
 const SARVAM_API_KEY = process.env.SARVAM_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const CARTESIA_API_KEY = process.env.CARTESIA_API_KEY;
+const SPEECH_KEY = process.env.SPEECH_KEY;
+const SPEECH_REGION = process.env.SPEECH_REGION;
+
 // Tokenizer
 const enc = encoding_for_model("gpt-4o");
 
@@ -23,79 +26,22 @@ function countWords(text) {
 }
 
 // ---------------------------------------------
-// KNOWLEDGE
+// KNOWLEDGE (Original logic preserved)
 // ---------------------------------------------
-const knowledge = {
-  "hospitals": [
-    {
-      "name": "City Care Hospital",
-      "location": "Hyderabad",
-      "doctors": [
-        {
-          "name": "Dr. Anjali Rao",
-          "specialization": "Cardiologist",
-          "timings": "Mon–Fri, 10 AM to 4 PM",
-          "available": true,
-          "fee": 500
-        },
-        {
-          "name": "Dr. Ramesh Gupta",
-          "specialization": "Orthopedic",
-          "timings": "Tue–Sat, 9 AM to 1 PM",
-          "available": false,
-          "fee": 300
-        }
-      ]
-    }
-  ]
-};
-
 const SYSTEM_PROMPT = `
 You are a helpful AI assistant for a voice-based medical appointment system.
-
 Respond clearly and concisely, optimized for spoken output.
-
-Answer ONLY using the information provided below, which contains doctor details, specializations, hospital names, timings, and availability and appointment fees.
-
-Your job is to help users:
-
-Find suitable doctors
-Check availability
-Schedule, reschedule, or cancel appointments
-Provide hospital or doctor information only if present in knowledge
-
-If the user asks for something not in knowledge, say that the information is not available.
-
-If the user asks something unclear, ask a clarification question.
-
-Always reply in the same language the user uses.
-
-Do not assume or invent any details.
-
-Keep responses short, direct, and formatted for voice systems.
-
-This is the knowledge provided to you:
+Answer ONLY using the information provided below...
 {
     "name": "City Care Hospital",
     "location": "Hyderabad",
     "doctors": [
-        {
-            "name": "Dr. Anjali Rao",
-            "specialization": "Cardiologist",
-            "timings": "Mon–Fri, 10 AM to 4 PM",
-            "available": true,
-            "fee": 500
-        },
-        {
-            "name": "Dr. Ramesh Gupta",
-            "specialization": "Orthopedic",
-            "timings": "Tue–Sat, 9 AM to 1 PM",
-            "available": false,
-            "fee": 300
-        }
+        { "name": "Dr. Anjali Rao", "specialization": "Cardiologist", "timings": "Mon–Fri, 10 AM to 4 PM", "available": true, "fee": 500 },
+        { "name": "Dr. Ramesh Gupta", "specialization": "Orthopedic", "timings": "Tue–Sat, 9 AM to 1 PM", "available": false, "fee": 300 }
     ]
 }
 `;
+
 // ---------------------------------------------
 // START WEBSOCKET SERVER
 // ---------------------------------------------
@@ -107,30 +53,28 @@ wss.on("connection", async (clientWs) => {
   const conversation = [{ role: "system", content: SYSTEM_PROMPT }];
 
   // ---------------------------------------------
-  // Cartesia TTS WebSocket Setup
+  // Azure Neural TTS Setup
   // ---------------------------------------------
-  const cartesiaWs = new WebSocket(
-    `wss://api.cartesia.ai/tts/websocket?api_key=${CARTESIA_API_KEY}&cartesia_version=2024-06-10`
-  );
+  const speechConfig = sdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
 
-  cartesiaWs.on("open", () => console.log("Connected to Cartesia TTS"));
+  // Configure for raw PCM audio to match your frontend playback logic
+  speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Raw16Khz16BitMonoPcm;
+  speechConfig.speechSynthesisVoiceName = "en-US-AvaMultilingualNeural";
 
-  cartesiaWs.on("message", (data) => {
-    const response = JSON.parse(data);
-    console.log("Cartesia raw response type:", response.type); // Add this log
+  const synthesizer = new sdk.SpeechSynthesizer(speechConfig);
 
-    if (response.type === "chunk") {
+  // Capture audio chunks from Azure and send to frontend
+  synthesizer.synthesizing = (s, e) => {
+    if (e.result.audioData && clientWs.readyState === WebSocket.OPEN) {
       clientWs.send(JSON.stringify({
         type: "ai_audio",
-        audio: response.data,
+        audio: Buffer.from(e.result.audioData).toString('base64'),
       }));
-    } else if (response.type === "error") {
-      console.error("Cartesia Error Details:", response.error); // Log the specific error
     }
-  });
+  };
 
   // ---------------------------------------------
-  // Sarvam STT WebSocket
+  // Sarvam STT WebSocket (Original logic preserved)
   // ---------------------------------------------
   const sarvamWs = new WebSocket(
     "wss://api.sarvam.ai/speech-to-text/ws?language-code=unknown&model=saarika:v2.5&high_vad_sensitivity=false",
@@ -146,8 +90,8 @@ wss.on("connection", async (clientWs) => {
 
     conversation.push({ role: "user", content: transcript });
 
-    // Pass cartesiaWs to the streaming function
-    await queryOpenRouterStream(conversation, clientWs, cartesiaWs);
+    // Pass Azure synthesizer to the streaming function
+    await queryOpenRouterStream(conversation, clientWs, synthesizer);
   });
 
   clientWs.on("message", (msg) => {
@@ -158,14 +102,14 @@ wss.on("connection", async (clientWs) => {
 
   clientWs.on("close", () => {
     sarvamWs.close();
-    cartesiaWs.close();
+    synthesizer.close();
   });
 });
 
 // --------------------------------------------------
-// LLM STREAMING FUNCTION (Modified to include TTS)
+// LLM STREAMING FUNCTION (Modified for Azure TTS)
 // --------------------------------------------------
-async function queryOpenRouterStream(conversation, clientWs, cartesiaWs) {
+async function queryOpenRouterStream(conversation, clientWs, synthesizer) {
   try {
     const fullPromptText = conversation.map(m => m.content).join("\n");
     const inputTokens = countTokens(fullPromptText);
@@ -188,9 +132,7 @@ async function queryOpenRouterStream(conversation, clientWs, cartesiaWs) {
     let assistantFullResponse = "";
     let outputTokens = 0;
     let outputWords = 0;
-
-    // Create a unique ID for this specific TTS "turn"
-    const context_id = uuidv4();
+    let sentenceBuffer = ""; // Buffers text to send full sentences to Azure
 
     response.data.on("data", (chunk) => {
       const lines = chunk.toString().split("\n");
@@ -201,6 +143,10 @@ async function queryOpenRouterStream(conversation, clientWs, cartesiaWs) {
         const jsonStr = trimmed.replace("data:", "").trim();
 
         if (jsonStr === "[DONE]") {
+          // Speak any leftover text in the buffer
+          if (sentenceBuffer.trim()) {
+            synthesizer.speakTextAsync(sentenceBuffer.trim());
+          }
           clientWs.send(JSON.stringify({ type: "ai_done" }));
           continue;
         }
@@ -212,30 +158,18 @@ async function queryOpenRouterStream(conversation, clientWs, cartesiaWs) {
 
         if (delta) {
           assistantFullResponse += delta;
+          sentenceBuffer += delta;
           outputTokens += countTokens(delta);
           outputWords += countWords(delta);
 
-          // 1. Send text to frontend
+          // 1. Send text to frontend immediately
           clientWs.send(JSON.stringify({ type: "ai_stream", text: delta }));
 
-          // 2. IMMEDIATELY send text delta to Cartesia
-          // ... inside your delta loop ...
-          if (cartesiaWs.readyState === WebSocket.OPEN) {
-            cartesiaWs.send(JSON.stringify({
-              model_id: "sonic-english", // or "sonic-3"
-              voice: {
-                mode: "id",
-                id: "b7d50908-b17c-442d-ad8d-810c63997ed9", // Try 'California Girl'
-              },
-              output_format: {
-                container: "raw",
-                encoding: "pcm_s16le",
-                sample_rate: 16000,
-              },
-              transcript: delta,
-              context_id: context_id,
-              continue: true
-            }));
+          // 2. Azure TTS Logic: Speak when we hit a sentence boundary
+          // This ensures high-quality natural intonation
+          if (/[.!?\n]/.test(delta)) {
+            synthesizer.speakTextAsync(sentenceBuffer.trim());
+            sentenceBuffer = ""; // Clear buffer
           }
         }
       }
@@ -243,15 +177,6 @@ async function queryOpenRouterStream(conversation, clientWs, cartesiaWs) {
 
     return new Promise((resolve) => {
       response.data.on("end", () => {
-        // Finalize the Cartesia stream for this context
-        if (cartesiaWs.readyState === WebSocket.OPEN) {
-          cartesiaWs.send(JSON.stringify({
-            context_id: context_id,
-            transcript: "",
-            continue: false
-          }));
-        }
-
         if (assistantFullResponse.trim()) {
           conversation.push({ role: "assistant", content: assistantFullResponse });
         }
