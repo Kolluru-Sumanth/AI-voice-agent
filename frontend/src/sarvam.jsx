@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 // --- Helper Functions ---
 const getTimestamp = () => {
@@ -47,7 +47,7 @@ const Sarvam = () => {
     // --- Cost Constants (INR) ---
     const INPUT_TOKEN_RATE = 0.000225;
     const OUTPUT_TOKEN_RATE = 0.0009;
-    const CHAR_RATE = 15 / 10000;
+    const CHAR_RATE = 1350 / 1000000;
     const DURATION_RATE = 45 / 3600;
 
     useEffect(() => {
