@@ -31,6 +31,7 @@ function countWords(text) {
 const SYSTEM_PROMPT = `
 You are a helpful AI assistant for a voice-based medical appointment system.
 Respond clearly and concisely, optimized for spoken output.
+speak in the same language as user speaks
 Answer ONLY using the information provided below...
 {
     "name": "City Care Hospital",
